@@ -241,7 +241,7 @@ module drbg_core (
             // SP 800-90A §10.2.1.5.2 step 2 complete: Key/V updated with addl_i
             // Now proceed with generate (encrypt V+1 under new Key)
             pre_gen_update <= 1'b0;
-            upd_v     <= drbg.v + 128'd1;  // recalc with new V
+            upd_v     <= (upd_blk2 ^ upd_provided_data[127:0]) + 128'd1;  // new_V + 1
             aes_key   <= {upd_blk0, upd_blk1} ^ upd_provided_data[383:128]; // new key
             aes_pt    <= (upd_blk2 ^ upd_provided_data[127:0]) + 128'd1;    // new V + 1
             aes_start <= 1'b1;
