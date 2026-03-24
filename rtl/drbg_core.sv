@@ -146,6 +146,7 @@ module drbg_core (
 
   // Is this a generate-update or instantiate/reseed-update?
   logic           update_for_gen;
+  logic           pre_gen_update;  // SP 800-90A §10.2.1.5.2 step 2 pre-generate Update
   logic [127:0]   gen_addl_lat;   // latched additional input for generate
 
   assign ready_o       = (state == S_READY);
@@ -170,6 +171,7 @@ module drbg_core (
       upd_v            <= '0;
       upd_provided_data<= '0;
       update_for_gen   <= 1'b0;
+      pre_gen_update   <= 1'b0;
       gen_addl_lat     <= '0;
     end else begin
       aes_start <= 1'b0;
@@ -235,8 +237,17 @@ module drbg_core (
           drbg.key <= {upd_blk0, upd_blk1} ^ upd_provided_data[383:128];
           drbg.v   <= upd_blk2 ^ upd_provided_data[127:0];
 
-          if (update_for_gen) begin
-            // After generate update, output is ready
+          if (pre_gen_update) begin
+            // SP 800-90A §10.2.1.5.2 step 2 complete: Key/V updated with addl_i
+            // Now proceed with generate (encrypt V+1 under new Key)
+            pre_gen_update <= 1'b0;
+            upd_v     <= drbg.v + 128'd1;  // recalc with new V
+            aes_key   <= {upd_blk0, upd_blk1} ^ upd_provided_data[383:128]; // new key
+            aes_pt    <= (upd_blk2 ^ upd_provided_data[127:0]) + 128'd1;    // new V + 1
+            aes_start <= 1'b1;
+            state     <= S_GEN_WAIT;
+          end else if (update_for_gen) begin
+            // After post-generate update, output is ready
             data_o  <= gen_output;
             valid_o <= 1'b1;
             reseed_ctr <= reseed_ctr + 48'd1;
@@ -253,13 +264,25 @@ module drbg_core (
         S_READY: begin
           if (generate_i) begin
             gen_addl_lat <= addl_i;
-            // V = V + 1
-            upd_v <= drbg.v + 128'd1;
-            // Encrypt the incremented V
-            aes_key   <= drbg.key;
-            aes_pt    <= drbg.v + 128'd1;
-            aes_start <= 1'b1;
-            state     <= S_GEN_WAIT;
+            if (addl_i != '0) begin
+              // SP 800-90A §10.2.1.5.2 step 2: pre-generate Update(addl_i)
+              upd_provided_data <= {addl_i, 256'd0};
+              upd_v     <= drbg.v + 128'd1;
+              aes_key   <= drbg.key;
+              aes_pt    <= drbg.v + 128'd1;
+              aes_start <= 1'b1;
+              update_for_gen <= 1'b0;     // post-Update goes to S_GEN_WAIT
+              pre_gen_update <= 1'b1;     // flag: after Update, do generate
+              state     <= S_UPDATE_WAIT1;
+            end else begin
+              // addl_i == 0: skip pre-generate Update (XOR with 0 is identity)
+              upd_v <= drbg.v + 128'd1;
+              aes_key   <= drbg.key;
+              aes_pt    <= drbg.v + 128'd1;
+              aes_start <= 1'b1;
+              pre_gen_update <= 1'b0;
+              state     <= S_GEN_WAIT;
+            end
           end else if (reseed_i) begin
             // Reseed: provided_data = entropy || additional_input (padded)
             upd_provided_data <= {entropy_i, addl_i};
